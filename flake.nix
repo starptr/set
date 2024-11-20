@@ -38,7 +38,9 @@
                     hello
                   '';
 
-                  processes.hello.exec = "hello";
+                  languages.rust = {
+                    enable = true;
+                  };
                 }
               ];
             };
