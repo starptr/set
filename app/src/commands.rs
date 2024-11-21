@@ -1,5 +1,5 @@
 use crate::{Context, Error, get_the_channel_id};
-use poise::serenity_prelude as serenity;
+use poise::serenity_prelude::{self as serenity, all, model::permissions};
 
 /// Show this help menu
 #[poise::command(prefix_command, track_edits, slash_command)]
@@ -26,12 +26,12 @@ pub async fn check(
     ctx: Context<'_>,
     #[description = "Check required perms"]
     #[autocomplete = "poise::builtins::autocomplete_command"]
-    command: Option<String>,
+    _command: Option<String>,
 ) -> Result<(), Error> {
     let channel_id = serenity::ChannelId::new(get_the_channel_id());
     let channel = match channel_id.to_channel(&ctx).await {
         Ok(serenity::Channel::Guild(channel)) => channel,
-        Ok(serenity::Channel::Private(channel)) => {
+        Ok(serenity::Channel::Private(_channel)) => {
             ctx.say(format!("Channel {} is a private channel", channel_id)).await?;
             return Ok(());
         },
@@ -44,20 +44,24 @@ pub async fn check(
             return Ok(());
         },
     };
-    let permissions = match channel.permissions {
-        Some(permissions) => permissions,
-        None => {
-            ctx.say(format!("Bot user has no permissions for Channel {}", channel_id)).await?;
-            return Ok(());
-        },
-    };
+    let bot_user = ctx.http().get_current_user().await?;
+    let permissions = channel.permissions_for_user(&ctx, bot_user.id)?;
+
+    let mut all_correct = true;
     if !permissions.contains(serenity::Permissions::MANAGE_MESSAGES) {
+        all_correct = false;
         ctx.say(format!("Bot user does not have the MANAGE_MESSAGES permission for Channel {}", channel_id)).await?;
-    } else {
+    }
+    if !permissions.contains(serenity::Permissions::READ_MESSAGE_HISTORY) {
+        all_correct = false;
+        ctx.say(format!("Bot user does not have the READ_MESSAGE_HISTORY permission for Channel {}", channel_id)).await?;
+    }
+    if all_correct {
         ctx.say("No incorrect settings for bot user were detected.").await?;
     }
     Ok(())
 }
+
 
 ///// Vote for something
 /////
