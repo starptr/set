@@ -169,7 +169,14 @@ async fn main() {
                                 last_message_id = Some(msgs.first().unwrap().id);
                             }
                             messages_cache.last_message_id = last_message_id;
-                        };
+                        }
+                        println!("Committing messages to disk");
+                        {
+                            let messages_cache = data.messages_cache.lock().await;
+                            let file = get_the_data_path();
+                            let file = fs::File::create(file)?;
+                            serde_json::to_writer_pretty(&file, &*messages_cache)?;
+                        }
                         Ok(())
                     }
                     serenity::FullEvent::Message{new_message} => {
@@ -181,6 +188,7 @@ async fn main() {
                         let msg = noramlize_string(&new_message.content);
                         let newly_inserted = {
                             let mut messages_cache = data.messages_cache.lock().await;
+                            messages_cache.last_message_id = Some(new_message.id);
                             messages_cache.cache.insert(msg)
                         };
                         if !newly_inserted {
@@ -190,17 +198,17 @@ async fn main() {
                                 println!("Failed to delete message: {:?}", error);
                             }
                         }
-                        let ct = data.uncommitted_count.fetch_add(1, atomic::Ordering::SeqCst);
-                        if ct >= 9 {
-                            println!("Committing messages to disk");
-                            {
-                                let messages_cache = data.messages_cache.lock().await;
-                                let file = get_the_data_path();
-                                let file = fs::File::create(file)?;
-                                serde_json::to_writer_pretty(&file, &*messages_cache)?;
-                            }
-                            data.uncommitted_count.store(0, atomic::Ordering::SeqCst);
+                        //let ct = data.uncommitted_count.fetch_add(1, atomic::Ordering::SeqCst);
+                        //if ct >= 9 {
+                        println!("Committing messages to disk");
+                        {
+                            let messages_cache = data.messages_cache.lock().await;
+                            let file = get_the_data_path();
+                            let file = fs::File::create(file)?;
+                            serde_json::to_writer_pretty(&file, &*messages_cache)?;
                         }
+                        //    data.uncommitted_count.store(0, atomic::Ordering::SeqCst);
+                        //}
                         Ok(())
                     }
                     _ => {
