@@ -1,6 +1,5 @@
 use crate::{Context, Error, get_the_channel_id};
 use poise::serenity_prelude as serenity;
-use ::serenity::model::permissions;
 
 /// Show this help menu
 #[poise::command(prefix_command, track_edits, slash_command)]
