@@ -29,7 +29,7 @@
           pname = metadata.package.name;
           version = metadata.package.version;
           src = ./app;
-          buildInputs = [ pkgs.darwin.apple_sdk.frameworks.SystemConfiguration ];
+          buildInputs = [] ++ nixpkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.apple_sdk.frameworks.SystemConfiguration ];
           cargoLock = {
             lockFile = ./app/Cargo.lock;
           };
