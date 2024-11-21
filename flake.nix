@@ -41,10 +41,6 @@
                   languages.rust = {
                     enable = true;
                   };
-
-                  dotenv = {
-                    enable = true;
-                  };
                 }
               ];
             };
