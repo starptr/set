@@ -16,9 +16,25 @@
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
     in
     {
-      packages = forEachSystem (system: {
+      packages = forEachSystem (system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+          };
+          metadata = builtins.fromTOML (builtins.readFile ./app/Cargo.toml);
+        in {
         devenv-up = self.devShells.${system}.default.config.procfileScript;
         devenv-test = self.devShells.${system}.default.config.test;
+        set-bot = pkgs.rustPackages.rustPlatform.buildRustPackage {
+          pname = metadata.package.name;
+          version = metadata.package.version;
+          src = ./app;
+          buildInputs = [ pkgs.darwin.apple_sdk.frameworks.SystemConfiguration ];
+          cargoLock = {
+            lockFile = ./app/Cargo.lock;
+          };
+        };
+        default = self.packages.${system}.set-bot;
       });
 
       devShells = forEachSystem
