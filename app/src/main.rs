@@ -1,222 +1,175 @@
-use std::env;
-use std::sync::Arc;
-use std::time::Duration;
-use chrono::DateTime;
-use chrono::Utc;
-use dotenvy::dotenv;
+#![warn(clippy::str_to_string)]
 
-use serenity::all::ChannelId;
-use serenity::async_trait;
-use serenity::builder::GetMessages;
-use serenity::http;
-use serenity::prelude::*;
-use serenity::model::channel::Message;
-use serenity::model::gateway::Ready;
-use serenity::model::timestamp::Timestamp;
-use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{StandardFramework, Configuration, CommandResult};
-use tokio::task::JoinHandle;
-use tokio::time::sleep;
+mod commands;
 
-fn get_link_to_msg(msg: &Message) -> Option<String> {
-    if msg.guild_id.is_some() {
-        Some(format!("https://discord.com/channels/{}/{}/{}", msg.guild_id.unwrap().get(), msg.channel_id.get(), msg.id.get()))
-    } else {
-        None
-    }
+use poise::serenity_prelude as serenity;
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    sync::{Arc, Mutex},
+    time::Duration,
+    fs,
+};
+use serde::{Deserialize, Serialize};
+
+// Types used by all command functions
+type Error = Box<dyn std::error::Error + Send + Sync>;
+type Context<'a> = poise::Context<'a, Data, Error>;
+
+#[derive(Serialize, Deserialize)]
+struct MessagesCache {
+    cache: HashSet<String>,
+    last_appended: serenity::model::timestamp::Timestamp,
 }
-
-fn get_fleeting_channel_id() -> ChannelId {
-    use std::str::FromStr;
-    let channel_id = env::var("CHANNEL_ID").expect("Channel ID not specified");
-    ChannelId::from_str(&channel_id).unwrap()
-}
-
-#[group]
-#[commands(ping)]
-struct General;
-
-fn serenity_ts_to_chrono_dt(ts: Timestamp) -> DateTime<Utc> {
-    let ts = ts.to_rfc3339().unwrap();
-    DateTime::parse_from_rfc3339(&ts).unwrap().with_timezone(&Utc)
-}
-
-#[derive(Clone)]
-struct Handler{
-    messages: Arc<Mutex<Vec<Message>>>,
-    timer: Arc<Mutex<Option<JoinHandle<()>>>>,
-}
-
-impl Handler {
-    fn new(messages: Arc<Mutex<Vec<Message>>>) -> Self {
-        Self { messages, timer: Arc::new(Mutex::new(None)) }
-    }
-
-    /**
-     * Start the timer to process messages
-     * The timer will not stop until there are no more messages to process
-     */
-    async fn start_timer(&self, ctx: Context) {
-        let messages = self.messages.clone();
-        let timer = self.timer.clone();
-        let http = ctx.http.clone();
-        {
-            let mut timer_shared_state = timer.lock().await;
-            // Early exit if the timer is already running
-            if timer_shared_state.is_some() { return; }
-
-
-            let timer = self.timer.clone();
-            let task = tokio::spawn(async move {
-                let mut timer_shared_state = timer.lock().await;
-                loop {
-                    let message = {
-                        let mut messages = messages.lock().await;
-                        // Early exit if there are no messages to process
-                        if messages.is_empty() {
-                            *timer_shared_state = None;
-                            break;
-                        }
-                        messages.remove(0)
-                    };
-                    // Compute sleep duration
-                    let day = std::time::Duration::from_secs(60);
-                    let sleep_duration = {
-                        let timestamp = message.timestamp;
-                        let target: DateTime<Utc> = serenity_ts_to_chrono_dt(timestamp) + day;
-                        let duration = target.signed_duration_since(Utc::now());
-                        duration
-                    };
-                    // Sleep until the message is ready to be processed
-                    sleep(sleep_duration.to_std().unwrap_or(Duration::ZERO)).await;
-
-                    // Process message
-                    let threshold = {
-                        let threshold = std::time::SystemTime::now() - day;
-                        let threshold = threshold.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis();
-                        Timestamp::from_millis(threshold.try_into().unwrap()).unwrap()
-                    };
-                    if message.timestamp <= threshold {
-                        // Delete message
-                        match message.delete(&http).await {
-                            Ok(_) => {},
-                            Err(e) => {
-                                let link_str = get_link_to_msg(&message).map_or("".to_string(), |link| link);
-                                eprintln!("Error deleting message {link_str}: {}", e);
-                                // Re-insert message into queue
-                                let messages = messages.clone();
-                                {
-                                    let mut messages = messages.lock().await;
-                                    messages.insert(0, message);
-                                }
-                            }
-                        }
-                        //println!("Del: {}", get_link_to_msg(&message).unwrap_or(message.content.to_string()));
-                    } else {
-                        panic!("Message was not ready to be processed but should have been ready");
-                    }
-                }
-            });
-            *timer_shared_state = Some(task);
+impl MessagesCache {
+    fn new() -> Self {
+        Self {
+            cache: HashSet::new(),
+            last_appended: serenity::model::timestamp::Timestamp::from_millis(0).unwrap(),
         }
     }
+    fn from_file(data_file: fs::File) -> Self {
+        unimplemented!("Implement loading from file")
+    }
 }
 
-#[async_trait]
-impl EventHandler for Handler {
-    // Add new messages to the all-messages vector
-    async fn message(&self, ctx: Context, msg: Message) {
-        if msg.channel_id != get_fleeting_channel_id() { return; }
-        {
-            let mut messages = self.messages.lock().await;
-            messages.push(msg);
+// Custom user data passed to all command functions
+pub struct Data {
+    messages_cache: Mutex<MessagesCache>,
+    //votes: Mutex<HashMap<String, u32>>,
+}
+
+async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
+    // This is our custom error handler
+    // They are many errors that can occur, so we only handle the ones we want to customize
+    // and forward the rest to the default handler
+    match error {
+        poise::FrameworkError::Setup { error, .. } => panic!("Failed to start bot: {:?}", error),
+        poise::FrameworkError::Command { error, ctx, .. } => {
+            println!("Error in command `{}`: {:?}", ctx.command().name, error,);
         }
-        // Start the timer to process them
-        let this = Arc::new(Mutex::new(self.clone()));
-        tokio::spawn(async move {
-            let this = this.clone();
-            let handler = this.lock().await;
-            handler.start_timer(ctx).await;
-        });
-    }
-
-    // Populate the messages vector with all messages in the channel
-    async fn ready(&self, ctx: Context, _ready: Ready) {
-        // Get channelid obj
-        let fleeting_channelid = get_fleeting_channel_id();
-        // Populate all messages
-        let mut last_id = None;
-        loop {
-            let messages_slice = fleeting_channelid.messages(&ctx.http, {
-                let retriever = GetMessages::new()
-                    .limit(100);
-                let retriever = if let Some(id) = last_id {
-                    // Continue where we left off from the last slice
-                    retriever.before(id)
-                } else { retriever };
-                retriever
-            }).await.expect("Error fetching messages");
-
-            if messages_slice.is_empty() {
-                // No more messages
-                break;
-            }
-            last_id = messages_slice.last().map(|m| m.id);
-
-            // Continue populating all messages with more messages
-            {
-                let mut messages = self.messages.lock().await;
-                for message in messages_slice {
-                    messages.push(message);
-                }
+        error => {
+            if let Err(e) = poise::builtins::on_error(error).await {
+                println!("Error while handling error: {}", e)
             }
         }
-        // Flip order because newest was at the beginning
-        {
-            let mut messages = self.messages.lock().await;
-            messages.reverse();
-        }
-
-        // Start the timer to process them
-        let this = Arc::new(Mutex::new(self.clone()));
-        tokio::spawn(async move {
-            let this = this.clone();
-            let handler = this.lock().await;
-            handler.start_timer(ctx).await;
-        });
     }
+}
+
+fn get_the_channel_id() -> u64 {
+    env::var("CHANNEL_ID")
+        .expect("Missing `CHANNEL_ID` env var. Set it to the channel ID to listen to.")
+        .parse()
+        .expect(format!("Failed to convert `CHANNEL_ID` {} to a u64", env::var("CHANNEL_ID").unwrap()).as_str())
 }
 
 #[tokio::main]
 async fn main() {
-    dotenv().expect(".env file not found");
+    env_logger::init();
 
-    let framework = StandardFramework::new().group(&GENERAL_GROUP);
-    framework.configure(Configuration::new().prefix("。")); // set the bot's prefix to "。"
+    let _ = get_the_channel_id();
 
-    // Queue of messages
-    let messages = Arc::new(Mutex::new(Vec::new()));
+    // FrameworkOptions contains all of poise's configuration option in one struct
+    // Every option can be omitted to use its default value
+    let options = poise::FrameworkOptions {
+        commands: vec![commands::help()],
+        prefix_options: poise::PrefixFrameworkOptions {
+            edit_tracker: Some(Arc::new(poise::EditTracker::for_timespan(
+                Duration::from_secs(3600),
+            ))),
+            mention_as_prefix: true,
+            ..Default::default()
+        },
+        // The global error handler for all error cases that may occur
+        on_error: |error| Box::pin(on_error(error)),
+        // This code is run before every command
+        pre_command: |ctx| {
+            Box::pin(async move {
+                println!("Executing command {}...", ctx.command().qualified_name);
+            })
+        },
+        // This code is run after a command if it was successful (returned Ok)
+        post_command: |ctx| {
+            Box::pin(async move {
+                println!("Executed command {}!", ctx.command().qualified_name);
+            })
+        },
+        // Every command invocation must pass this check to continue execution
+        command_check: Some(|ctx| {
+            Box::pin(async move {
+                if ctx.author().id == 123456789 {
+                    return Ok(false);
+                }
+                Ok(true)
+            })
+        }),
+        // Enforce command checks even for owners (enforced by default)
+        // Set to true to bypass checks, which is useful for testing
+        skip_checks_for_owners: false,
+        event_handler: |ctx, event, _framework, data| {
+            Box::pin(async move {
+                match event {
+                    serenity::FullEvent::Message{new_message} => {
+                        if new_message.channel_id != get_the_channel_id() {
+                            println!("Got an event {:?} for channel {:?}, ignoring", event.snake_case_name(), new_message.channel_id);
+                            return Ok(());
+                        }
+                        let msg = {
+                            let msg = &new_message.content;
+                            use unicode_normalization::UnicodeNormalization;
+                            // Apply Unicode Normalization Form C
+                            let msg: String = msg.nfc().collect();
+                            // Remove all whitespaces, and split into tokens (formerly separated by whitespaces)
+                            let tokens: Vec<_> = msg.split_whitespace().collect();
+                            tokens.join(" ")
+                        };
+                        let newly_inserted = {
+                            let mut messages_cache = data.messages_cache.lock().unwrap();
+                            messages_cache.cache.insert(msg)
+                        };
+                        if !newly_inserted {
+                            let res = new_message.delete(ctx).await;
+                            if let Err(error) = res {
+                                println!("Failed to delete message: {:?}", error);
+                            }
+                        }
+                        Ok(())
+                    }
+                    _ => {
+                        println!("Got an event: {:?}", event.snake_case_name());
+                        Ok(())
+                    }
+                }
+            })
+        },
+        ..Default::default()
+    };
 
-    // Login with a bot token from the environment
-    let token = env::var("DISCORD_TOKEN").expect("token");
-    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT | GatewayIntents::GUILD_MESSAGES;
-    let mut client = Client::builder(token, intents)
-        .event_handler(Handler::new(messages.clone()))
+    let framework = poise::Framework::builder()
+        .setup(move |ctx, _ready, framework| {
+            Box::pin(async move {
+                println!("Logged in as {}", _ready.user.name);
+                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                Ok(Data {
+                    messages_cache: Mutex::new(MessagesCache::new()),
+                    //votes: Mutex::new(HashMap::new()),
+                })
+            })
+        })
+        .options(options)
+        .build();
+
+    let token = env::var("DISCORD_TOKEN")
+        .expect("Missing `DISCORD_TOKEN` env var, see README for more information.");
+    let intents =
+        serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
+
+    let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
         .await
         .expect("Error creating client");
 
-    // start listening for events by starting a single shard
     if let Err(why) = client.start().await {
         println!("An error occurred while running the client: {:?}", why);
     }
-}
-
-#[command]
-async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
-    msg.reply(ctx, "Pong!").await?;
-
-    println!("Msg: {}", get_link_to_msg(msg).unwrap_or("No link".to_string()));
-
-    Ok(())
 }
