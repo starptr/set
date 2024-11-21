@@ -75,6 +75,16 @@ fn get_the_data_path() -> path::PathBuf {
     data_path
 }
 
+fn noramlize_string(msg: &str) -> String {
+    let msg = msg.to_lowercase();
+    use unicode_normalization::UnicodeNormalization;
+    // Apply Unicode Normalization Form C
+    let msg: String = msg.nfc().collect();
+    // Remove all whitespaces, and split into tokens (formerly separated by whitespaces)
+    let tokens: Vec<_> = msg.split_whitespace().collect();
+    tokens.join(" ")
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     env_logger::init();
@@ -138,15 +148,16 @@ async fn main() {
                                 let query = match last_message_id {
                                     Some(last_message_id) => serenity::builder::GetMessages::new()
                                         .after(last_message_id),
-                                    None => serenity::builder::GetMessages::new(), // INFO: this is technically bugged, since without any specification, messages are ordered by most recent
+                                    None => serenity::builder::GetMessages::new().limit(100), // INFO: this is technically bugged, since without any specification, messages are ordered by most recent
                                 };
                                 let msgs = channel.messages(ctx, query).await?;
                                 if msgs.is_empty() {
                                     break;
                                 }
                                 for message in &msgs {
-                                    println!("Catching up on msg from {:?}: {}", message.author_nick(ctx).await, message.content);
-                                    let newly_inserted = messages_cache.cache.insert(message.content.clone());
+                                    let msg = noramlize_string(&message.content);
+                                    println!("Catching up on msg from {:?}: {}", message.author_nick(ctx).await, msg);
+                                    let newly_inserted = messages_cache.cache.insert(msg);
                                     if !newly_inserted {
                                         println!("Deleting duplicate message");
                                         let res = message.delete(ctx).await;
@@ -167,15 +178,7 @@ async fn main() {
                             return Ok(());
                         }
                         println!("Handling message from {:?}: {}", new_message.author_nick(ctx).await, new_message.content);
-                        let msg = {
-                            let msg = &new_message.content;
-                            use unicode_normalization::UnicodeNormalization;
-                            // Apply Unicode Normalization Form C
-                            let msg: String = msg.nfc().collect();
-                            // Remove all whitespaces, and split into tokens (formerly separated by whitespaces)
-                            let tokens: Vec<_> = msg.split_whitespace().collect();
-                            tokens.join(" ")
-                        };
+                        let msg = noramlize_string(&new_message.content);
                         let newly_inserted = {
                             let mut messages_cache = data.messages_cache.lock().await;
                             messages_cache.cache.insert(msg)
