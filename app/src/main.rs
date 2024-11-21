@@ -89,6 +89,8 @@ fn noramlize_string(msg: &str) -> String {
 async fn main() {
     env_logger::init();
 
+    dotenvy::dotenv().expect("Failed to load .env file");
+
     let _ = get_the_channel_id();
 
     // FrameworkOptions contains all of poise's configuration option in one struct
