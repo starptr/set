@@ -31,9 +31,12 @@ impl MessagesCache {
         }
     }
     fn from_file(data_file: fs::File) -> Self {
-        unimplemented!("Implement loading from file")
+        // TODO: refactor
+        let data: MessagesCache = serde_json::from_reader(data_file).expect("Failed to deserialize data file");
+        data
     }
     fn to_file(data_file: fs::File) -> Self {
+        // TODO: refactor
         unimplemented!("Implement saving to file")
     }
 }
@@ -168,7 +171,7 @@ async fn main() {
                                         }
                                     }
                                 }
-                                last_message_id = Some(msgs.first().unwrap().id);
+                                last_message_id = Some(msgs.first().unwrap().id); // messages are returned in reverse order (bottom to top)
                             }
                             messages_cache.last_message_id = last_message_id;
                         }
@@ -223,13 +226,20 @@ async fn main() {
         ..Default::default()
     };
 
+    let file = get_the_data_path();
+    let file = fs::File::open(file);
+    let messages_cache = match file {
+        Ok(file) => MessagesCache::from_file(file),
+        Err(_) => MessagesCache::new(),
+    };
+
     let framework = poise::Framework::builder()
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
                 println!("Logged in as {}", _ready.user.name);
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                 Ok(Data {
-                    messages_cache: Arc::new(Mutex::new(MessagesCache::new())),
+                    messages_cache: Arc::new(Mutex::new(messages_cache)),
                     //votes: Mutex::new(HashMap::new()),
                     uncommitted_count: atomic::AtomicU32::new(0),
                 })
