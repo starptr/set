@@ -9,3 +9,9 @@ Create a `.env` file in the root of the repository with the following content:
 DISCORD_TOKEN=bot_token_here
 CHANNEL_ID=channel_id_here
 ```
+
+Then run the bot:
+```
+cd app
+cargo run
+```
